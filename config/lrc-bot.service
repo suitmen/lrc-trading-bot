@@ -1,0 +1,15 @@
+[Unit]
+Description=LRC Trading Bot service
+After=network.target
+
+[Service]
+Type=simple
+User=botuser
+WorkingDirectory=/opt/lrc-bot
+EnvironmentFile=/opt/lrc-bot/.env
+ExecStart=/opt/lrc-bot/venv/bin/python /opt/lrc-bot/main.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

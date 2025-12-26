@@ -1,0 +1,6 @@
+pandas
+numpy
+python-dotenv
+pybit
+TA-Lib
+requests

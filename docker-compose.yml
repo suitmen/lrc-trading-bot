@@ -1,0 +1,13 @@
+version: '3.8'
+services:
+  lrc-bot:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./:/app
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
