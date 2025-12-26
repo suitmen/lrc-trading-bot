@@ -84,7 +84,7 @@ class LRCBybitBot:
         price = float(ticker['lastPrice'])
         atr = self.calculate_atr()
         sl_distance = atr * 1.5
-        qty = (risk_amount / sl_distance) / price
+        qty = max((risk_amount / sl_distance) / price,0.1)
         return round(qty, 3)
     
     def calculate_atr(self):
