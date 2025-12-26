@@ -1,9 +1,9 @@
 FROM python:3.11-slim
 
 # Install system deps for TA-Lib
-RUN apt-get update && \
-    apt-get install -y build-essential libta-lib0 libta-lib-dev gcc && \
-    rm -rf /var/lib/apt/lists/*
+#RUN apt-get update && \
+#    apt-get install -y build-essential libta-lib0 libta-lib-dev gcc && \
+#    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
