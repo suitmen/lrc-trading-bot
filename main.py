@@ -251,7 +251,7 @@ if __name__ == "__main__":
     testnet_flag = trading_mode != 'live'
 
 #    symbols = load_symbols()
-    symbols = ["BTCUSDT","ETHUSDT","SOLUSDT","APTUSDT","TONUSDT","UNIUSDT","XRPUSDC"]
+    symbols = ["BTCUSDT","ETHUSDT","SOLUSDT","APTUSDT","TONUSDT","UNIUSDT"]
     
     if not symbols:
         logger.warning("No SYMBOLS found; defaulting to SOLUSDT")
