@@ -1,5 +1,7 @@
 import os
 import time
+import threading
+import re
 import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
@@ -10,10 +12,35 @@ from datetime import datetime
 import logging
 
 # Настройка логирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(threadName)s - %(message)s')
+logger = logging.getLogger('lrc-bot')
 
 load_dotenv()
+
+def load_symbols():
+    """Загрузить SYMBOLS из окружения или из .env (поддерживает список и CSV)."""
+    env = os.getenv('SYMBOLS')
+
+    logging.debug(f"Loading SYMBOLS from env: {env}")
+
+    if env:
+        s = env.strip()
+        s = s.strip('[]')
+        s = s.replace('"', '').replace("'", "")
+        parts = [p.strip() for p in s.split(',') if p.strip()]
+        return [p.upper() for p in parts]
+    # fallback: parse .env file for a list-like block
+    try:
+        with open('.env', 'r', encoding='utf-8') as f:
+            text = f.read()
+        m = re.search(r'SYMBOLS\s*=\s*\[(.*?)\]', text, re.S)
+        if m:
+            content = m.group(1)
+            parts = re.findall(r'["\'](.*?)["\']', content)
+            return [p.upper() for p in parts]
+    except FileNotFoundError:
+        pass
+    return []
 
 class LRCBybitBot:
     def __init__(self, api_key, api_secret, symbol='SOLUSDT', testnet=True):
@@ -29,6 +56,8 @@ class LRCBybitBot:
         self.risk_per_trade = 0.01  # 1%
         self.tp_ratio = 2.0
         self.position = None
+        self.stop_event = threading.Event()
+        self.logger = logging.getLogger(f'lrc-bot.{self.symbol}')
         
     def get_klines(self, interval='5', limit=100):
         """Получить OHLCV данные"""
@@ -141,7 +170,7 @@ class LRCBybitBot:
         
         self.position = self.get_position()
 
-        print(f"{linreg} {upper} {lower} {close}")
+        self.logger.debug(f"lrc:{linreg} upper:{upper} lower:{lower} close:{close}")
 
      
         # Long сигнал: пробой верхней границы
@@ -172,14 +201,19 @@ class LRCBybitBot:
     
     def run(self):
         """Главный цикл"""
-        logger.info(f"Starting LRC 5m bot for {self.symbol}")
-        while True:
+        self.logger.info(f"Starting LRC 5m bot for {self.symbol}")
+        while not self.stop_event.is_set():
             try:
                 self.check_signals()
                 time.sleep(30)  # Проверка каждые 30 сек
             except Exception as e:
-                logger.error(f"Error: {e}")
+                self.logger.exception(f"Error in {self.symbol}: {e}")
                 time.sleep(60)
+        self.logger.info(f"Bot for {self.symbol} stopped")
+
+    def stop(self):
+        """Остановить цикл"""
+        self.stop_event.set()
 
 
 
@@ -210,15 +244,44 @@ if __name__ == "__main__":
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-#    print(f"BYBIT_API_KEY {API_KEY}")
-    
     if not API_KEY or not API_SECRET:
         raise ValueError("Set BYBIT_API_KEY and BYBIT_SECRET_KEY environment variables")
+
+    trading_mode = os.getenv('TRADING_MODE', 'testnet').lower()
+    testnet_flag = trading_mode != 'live'
+
+#    symbols = load_symbols()
+    symbols = ["BTCUSDT","ETHUSDT","SOLUSDT","APTUSDT","TONUSDT","UNIUSDT","XRPUSDC"]
     
-    bot = LRCBybitBot(
-        api_key=API_KEY,
-        api_secret=API_SECRET,
-        symbol='SOLUSDT',
-        testnet=False  # testnet=True для тестов
-    )
-    bot.run()
+    if not symbols:
+        logger.warning("No SYMBOLS found; defaulting to SOLUSDT")
+        symbols = [os.getenv('SYMBOL', 'SOLUSDT')]
+
+    bots = {}
+    threads = []
+
+    def start_bot(sym):
+        bot = LRCBybitBot(api_key=API_KEY, api_secret=API_SECRET, symbol=sym, testnet=testnet_flag)
+        bots[sym] = bot
+        try:
+            bot.run()
+        except Exception:
+            logger.exception(f"Unhandled exception in bot {sym}")
+
+    # Запускаем боты в потоках
+    for sym in symbols:
+        t = threading.Thread(target=start_bot, args=(sym,), name=f"Bot-{sym}")
+        t.start()
+        threads.append(t)
+        time.sleep(1)
+
+    try:
+        while any(t.is_alive() for t in threads):
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("KeyboardInterrupt received, stopping bots...")
+        for b in bots.values():
+            b.stop()
+        for t in threads:
+            t.join(timeout=10)
+        logger.info("All bots stopped")
