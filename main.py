@@ -12,7 +12,7 @@ from datetime import datetime
 import logging
 
 # Настройка логирования
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(threadName)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(threadName)s - %(message)s')
 logger = logging.getLogger('lrc-bot')
 
 load_dotenv()
@@ -21,7 +21,7 @@ def load_symbols():
     """Загрузить SYMBOLS из окружения или из .env (поддерживает список и CSV)."""
     env = os.getenv('SYMBOLS')
 
-    logging.debug(f"Loading SYMBOLS from env: {env}")
+#   logging.debug(f"Loading SYMBOLS from env: {env}")
 
     if env:
         s = env.strip()
@@ -104,7 +104,11 @@ class LRCBybitBot:
         return 0.0
 
     
+    
     def get_position_size(self):
+
+        get_value = lambda x: 0.1 if 100.0 <= x < 1000.0 else 0.01 if 1000.0 <= x < 10000.0 else 0.001 if 10000.0 <= x <= 1000000.0 else 1
+
         """Размер позиции по риску"""
         balance = self.get_usdt_balance()
         balance = float(balance) if balance else 1000
@@ -113,12 +117,12 @@ class LRCBybitBot:
         price = float(ticker['lastPrice'])
         atr = self.calculate_atr()
         sl_distance = atr * 1.5
-        max_qty = lambda price: 0.1 if 100 <= price < 1000 else 0.01 if 1000 <= price < 10000 else 0.001 if 10000 <= price <= 1000000 else 1
+        
 
         if price > 100: 
-           qty = round(max((risk_amount / sl_distance) / price,max_qty),3)
+           qty = round(max((risk_amount / sl_distance) / price,get_value(price)),3)
         else:
-           qty = round(max((risk_amount / sl_distance) / price,max_qty),2)
+           qty = round(max((risk_amount / sl_distance) / price,get_value(price)),2)
         return qty
 
     
@@ -176,7 +180,11 @@ class LRCBybitBot:
         
         self.position = self.get_position()
 
-        self.logger.debug(f"lrc:{linreg} upper:{upper} lower:{lower} close:{close}")
+        qty =self.get_position_size()
+        logger.info(f"QTY:  {qty} {self.symbol} ")
+
+
+ #      self.logger.debug(f"lrc:{linreg} upper:{upper} lower:{lower} close:{close}")
 
      
         # Long сигнал: пробой верхней границы
