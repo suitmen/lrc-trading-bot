@@ -113,14 +113,13 @@ class LRCBybitBot:
         price = float(ticker['lastPrice'])
         atr = self.calculate_atr()
         sl_distance = atr * 1.5
+
         max_qty = lambda price: 0.1 if 100 <= price < 1000 else 0.01 if 1000 <= price < 10000 else 0.001 if 10000 <= price <= 1000000 else 1
 
         if price > 100: 
-           qty = round(max((risk_amount / sl_distance) / price,max_qty),3)
-        else:
-           qty = round(max((risk_amount / sl_distance) / price,max_qty),2)
+           qty = rount(max((risk_amount / sl_distance) / price,max_qty),3)
+        esle qty = rount(max((risk_amount / sl_distance) / price,max_qty),2)
         return qty
-
     
     def calculate_atr(self):
         """ATR для стопов"""
@@ -258,7 +257,7 @@ if __name__ == "__main__":
 
 #    symbols = load_symbols()
     symbols = ["BTCUSDT","ETHUSDT","SOLUSDT","APTUSDT","TONUSDT","UNIUSDT"]
-
+    
     if not symbols:
         logger.warning("No SYMBOLS found; defaulting to SOLUSDT")
         symbols = [os.getenv('SYMBOL', 'SOLUSDT')]
