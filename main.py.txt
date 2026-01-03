@@ -50,11 +50,11 @@ class LRCBybitBot:
             api_secret=api_secret
         )
         self.symbol = symbol
-        self.lrc_period = 25         # чуть длиннее → устойчивее к шуму на 5m
-        self.dev_mult = 2.0          # оставить
+        self.lrc_period = 20
+        self.dev_mult = 2.0
         self.rsi_period = 14
-        self.risk_per_trade = 0.005  # снизить до 0.5% — mean-revert даёт меньше прибыли за сделку, но чаще
-        self.tp_ratio = 1.0          # не используется, но для совместимости
+        self.risk_per_trade = 0.01  # 1%
+        self.tp_ratio = 2.0
         self.position = None
         self.stop_event = threading.Event()
         self.logger = logging.getLogger(f'lrc-bot.{self.symbol}')
@@ -159,76 +159,59 @@ class LRCBybitBot:
         return order
     
     def check_signals(self):
-        """Mean-reversion на LRC: вход при касании границы + отскок, а не при пробое."""
-        df = self.get_klines(limit=self.lrc_period + 20)
-        if len(df) < self.lrc_period + 5:
-           return
+        """Основная логика сигналов LRC 5m"""
+        df = self.get_klines(limit=self.lrc_period + 10)
+        if len(df) < self.lrc_period:
+            return
+            
         close = df['close'].iloc[-1]
         prev_close = df['close'].iloc[-2]
         high = df['high'].iloc[-1]
         low = df['low'].iloc[-1]
-
+        
         # LRC
         linreg, upper, lower, slope = self.calculate_lrc(
             df['high'], df['low'], df['close'], self.lrc_period
         )
+        
         rsi = self.calculate_rsi(df['close'])
-        atr = self.calculate_atr()
-
+        volume = df['volume'].iloc[-1]
+        avg_volume = df['volume'].rolling(20).mean().iloc[-1]
+        
         self.position = self.get_position()
-        qty = self.get_position_size()
- 
-        # --- Динамический margin для касания (учитывает волатильность)
-        margin = atr * 0.2  # ~20% от ATR — достаточно для шума на 5m
- 
-        # --- LONG: цена коснулась нижней границы и отскочила вверх
-        if not self.position:
-            # Не входить, если тренд сильно нисходящий (наклон << 0)
-            if (low <= lower + margin and
-                close > prev_close and                     # отскок (закрытие выше предыдущей)
-                slope > -0.5 * atr and                     # слабый или умеренный нисходящий тренд
-                rsi < 52):                                 # не перекуплен
-             
-                logger.info(f"🔄 LONG signal (mean-revert) on {self.symbol}: "
-                           f"price={close:.4f}, lower={lower:.4f}, slope={slope:.6f}, RSI={rsi:.1f}")
 
-                # SL — за нижнюю границу канала (+ буфер)
-                sl_price = lower - atr * 1.0
-                # TP — к центральной линии (линрег), плюс небольшой буфер
-                tp_price = linreg + atr * 0.3
-               
-                # Защита: TP должен быть выше входа, SL — ниже
-                if tp_price <= close:
-                    tp_price = close + atr * 0.8
-                if sl_price >= close:
-                    sl_price = close - atr * 1.2
-  
-                self.place_order("Buy", qty, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
-                send_telegram(f"🔄 LONG signal (mean-revert) on {self.symbol}: "
-                            f"price={close:.4f}, lower={lower:.4f}, slope={slope:.6f}, RSI={rsi:.1f}")
-   
-        # --- SHORT: цена коснулась верхней границы и отскочила вниз
-        if not self.position:
-            if (high >= upper - margin and
-                close < prev_close and                     # отскок вниз
-                slope < 0.5 * atr and                      # не сильный восходящий тренд
-                rsi > 48):                                 # не перепродан
+        qty =self.get_position_size()
+        logger.info(f"QTY:  {qty} {self.symbol} ")
 
-                logger.info(f"🔄 SHORT signal (mean-revert) on {self.symbol}: "
-                            f"price={close:.4f}, upper={upper:.4f}, slope={slope:.6f}, RSI={rsi:.1f}")
+
+ #      self.logger.debug(f"lrc:{linreg} upper:{upper} lower:{lower} close:{close}")
+
+     
+        # Long сигнал: пробой верхней границы
+        if (not self.position and 
+            prev_close <= upper and close > upper and 
+            slope > 0 and rsi > 50 and volume > avg_volume * 1.2):
  
-                sl_price = upper + atr * 1.0
-                tp_price = linreg - atr * 0.3
- 
-                if tp_price >= close:
-                   tp_price = close - atr * 0.8
-                if sl_price <= close:
-                   sl_price = close + atr * 1.2
- 
-                self.place_order("Sell", qty, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
-                send_telegram(f"🔄 SHORT signal (mean-revert) on {self.symbol}: "
-                            f"price={close:.4f}, upper={upper:.4f}, slope={slope:.6f}, RSI={rsi:.1f}")
-  
+            send_telegram(f"*LONG signal detected on {self.symbol}*\nPrice: {close}\nTime: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")         
+            qty = self.get_position_size()
+            atr = self.calculate_atr()
+            sl_price = lower - atr * 0.5
+            tp_price = close + (close - sl_price) * self.tp_ratio
+            
+            self.place_order("Buy", qty, tp_price, sl_price)
+            
+        # Short сигнал: пробой нижней границы
+        elif (not self.position and 
+              prev_close >= lower and close < lower and 
+              slope < 0 and rsi < 50 and volume > avg_volume * 1.2):
+
+            send_telegram(f"*SHORT signal detected on {self.symbol}*\nPrice: {close}\nTime: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")         
+            qty = self.get_position_size()
+            atr = self.calculate_atr()
+            sl_price = upper + atr * 0.5
+            tp_price = close - (sl_price - close) * self.tp_ratio
+            
+            self.place_order("Sell", qty, tp_price, sl_price)
     
     def run(self):
         """Главный цикл"""
