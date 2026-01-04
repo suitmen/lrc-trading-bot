@@ -155,6 +155,7 @@ class LRCBybitBot:
 
         # ✅ Динамическая оценка волатильности — решает проблему "пропущенного движения"
         short_range = (df['high'].iloc[-5:].max() - df['low'].iloc[-5:].min()) / close * 100
+        short_range_pct = short_range / close * 100
         roc_15m = (close / df['close'].iloc[-4] - 1) * 100 if len(df) >= 5 else 0
         effective_vol = max(atr_pct, short_range * 0.7)
         volatility_override = abs(roc_15m) >= 0.8  # если движение >0.8% за 15 мин — разрешаем вход
