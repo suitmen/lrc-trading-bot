@@ -14,245 +14,34 @@ import logging
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(threadName)s - %(message)s')
 logger = logging.getLogger('lrc-bot')
-
 load_dotenv()
 
 def load_symbols():
     """Загрузить SYMBOLS из окружения или из .env (поддерживает список и CSV)."""
     env = os.getenv('SYMBOLS')
-
-#   logging.debug(f"Loading SYMBOLS from env: {env}")
-
     if env:
-        s = env.strip()
-        s = s.strip('[]')
-        s = s.replace('"', '').replace("'", "")
+        s = env.strip().strip('[]').replace('"', '').replace("'", "")
         parts = [p.strip() for p in s.split(',') if p.strip()]
         return [p.upper() for p in parts]
-    # fallback: parse .env file for a list-like block
+    # fallback: parse .env file
     try:
         with open('.env', 'r', encoding='utf-8') as f:
             text = f.read()
-        m = re.search(r'SYMBOLS\s*=\s*\[(.*?)\]', text, re.S)
-        if m:
-            content = m.group(1)
-            parts = re.findall(r'["\'](.*?)["\']', content)
-            return [p.upper() for p in parts]
+            m = re.search(r'SYMBOLS\s*=\s*\[(.*?)\]', text, re.S)
+            if m:
+                content = m.group(1)
+                parts = re.findall(r'["\'](.*?)["\']', content)
+                return [p.upper() for p in parts]
     except FileNotFoundError:
         pass
     return []
 
-class LRCBybitBot:
-    def __init__(self, api_key, api_secret, symbol='SOLUSDT', testnet=True):
-        self.session = HTTP(
-            testnet=testnet,
-            api_key=api_key,
-            api_secret=api_secret
-        )
-        self.symbol = symbol
-        self.lrc_period = 25         # чуть длиннее → устойчивее к шуму на 5m
-        self.dev_mult = 2.0          # оставить
-        self.rsi_period = 14
-        self.risk_per_trade = 0.005  # снизить до 0.5% — mean-revert даёт меньше прибыли за сделку, но чаще
-        self.tp_ratio = 1.0          # не используется, но для совместимости
-        self.position = None
-        self.stop_event = threading.Event()
-        self.logger = logging.getLogger(f'lrc-bot.{self.symbol}')
-        
-    def get_klines(self, interval='5', limit=100):
-        """Получить OHLCV данные"""
-        klines = self.session.get_kline(
-            category="linear",
-            symbol=self.symbol,
-            interval=interval,
-            limit=limit
-        )
-#        print(f"** {klines['result']['list']}")
-
-        df = pd.DataFrame(klines['result']['list'], 
-                         columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 
-                                'turnover'])
-        df = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
-        df = df.iloc[::-1].reset_index(drop=True)  # Новые сверху
-        return df
-    
-    def calculate_lrc(self, highs, lows, closes, period):
-        """Вычисление Linear Regression Channel"""
-        # Линейная регрессия для close
-        linreg = talib.LINEARREG(closes, timeperiod=period)
-        linreg_slope = talib.LINEARREG_SLOPE(closes, timeperiod=period)
-        
-        # Стандартное отклонение
-        std = talib.STDDEV(closes, timeperiod=period)
-        
-        upper = linreg + (std * self.dev_mult)
-        lower = linreg - (std * self.dev_mult)
-        
-        return linreg.iloc[-1], upper.iloc[-1], lower.iloc[-1], linreg_slope.iloc[-1]
-    
-    def calculate_rsi(self, closes):
-        """RSI для фильтра"""
-        return talib.RSI(closes, timeperiod=self.rsi_period).iloc[-1]
-
-    def get_usdt_balance(self):
-        resp = self.session.get_wallet_balance(accountType="UNIFIED")
-        coins = resp['result']['list'][0]['coin']  # список монет
-        usdt = next((c for c in coins if c['coin'] == 'USDT'), None)
-        if usdt:
-            # Используем доступный баланс или equity по USDT
-           return float(usdt['equity'])  # или usdt['availableToWithdraw']
-        return 0.0
-
-    
-    
-    def get_position_size(self):
-
-        get_value = lambda x: 0.1 if 100.0 <= x < 1000.0 else 0.01 if 1000.0 <= x < 10000.0 else 0.001 if 10000.0 <= x <= 1000000.0 else 1
-
-        """Размер позиции по риску"""
-        balance = self.get_usdt_balance()
-        balance = float(balance) if balance else 1000
-        risk_amount = balance * self.risk_per_trade
-        ticker = self.session.get_tickers(category="linear", symbol=self.symbol)['result']['list'][0]
-        price = float(ticker['lastPrice'])
-        atr = self.calculate_atr()
-        sl_distance = atr * 1.5
-        
-
-        if price > 100: 
-           qty = round(max((risk_amount / sl_distance) / price,get_value(price)),3)
-        else:
-           qty = round(max((risk_amount / sl_distance) / price,get_value(price)),2)
-        return qty
-
-    
-    def calculate_atr(self):
-        """ATR для стопов"""
-        df = self.get_klines(limit=50)
-        return talib.ATR(df['high'], df['low'], df['close'], timeperiod=14).iloc[-1]
-    
-    def get_position(self):
-        """Текущая позиция"""
-        positions = self.session.get_positions(category="linear", symbol=self.symbol)
-
-        pos = positions['result']['list']
-        if pos and float(pos[0]['size']) > 0:
-            return {
-                'side': pos[0]['side'],
-                'size': float(pos[0]['size']),
-                'entryPrice': float(pos[0]['avgPrice'])
-            }
-        return None
-    
-    def place_order(self, side, qty, tp_price=None, sl_price=None):
-        """Разместить ордер с TP/SL"""
-        order = self.session.place_order(
-            category="linear",
-            symbol=self.symbol,
-            side=side,
-            orderType="Market",
-            qty=str(qty),
-            takeProfit=tp_price,
-            stopLoss=sl_price
-        )
-        logger.info(f"Order placed: {side} {qty} {self.symbol} TP:{tp_price} SL:{sl_price}")
-        return order
-    
-    def check_signals(self):
-        """Mean-reversion на LRC: вход при касании границы + отскок, а не при пробое."""
-        df = self.get_klines(limit=self.lrc_period + 20)
-        if len(df) < self.lrc_period + 5:
-           return
-        close = df['close'].iloc[-1]
-        prev_close = df['close'].iloc[-2]
-        high = df['high'].iloc[-1]
-        low = df['low'].iloc[-1]
-
-        # LRC
-        linreg, upper, lower, slope = self.calculate_lrc(
-            df['high'], df['low'], df['close'], self.lrc_period
-        )
-        rsi = self.calculate_rsi(df['close'])
-        atr = self.calculate_atr()
-
-        self.position = self.get_position()
-        qty = self.get_position_size()
- 
-        # --- Динамический margin для касания (учитывает волатильность)
-        margin = atr * 0.2  # ~20% от ATR — достаточно для шума на 5m
- 
-        # --- LONG: цена коснулась нижней границы и отскочила вверх
-        if not self.position:
-            # Не входить, если тренд сильно нисходящий (наклон << 0)
-            if (low <= lower + margin and
-                close > prev_close and                     # отскок (закрытие выше предыдущей)
-                slope > -0.5 * atr and                     # слабый или умеренный нисходящий тренд
-                rsi < 52):                                 # не перекуплен
-             
-                logger.info(f"🔄 LONG signal (mean-revert) on {self.symbol}: "
-                           f"price={close:.4f}, lower={lower:.4f}, slope={slope:.6f}, RSI={rsi:.1f}")
-
-                # SL — за нижнюю границу канала (+ буфер)
-                sl_price = lower - atr * 1.0
-                # TP — к центральной линии (линрег), плюс небольшой буфер
-                tp_price = linreg + atr * 0.3
-               
-                # Защита: TP должен быть выше входа, SL — ниже
-                if tp_price <= close:
-                    tp_price = close + atr * 0.8
-                if sl_price >= close:
-                    sl_price = close - atr * 1.2
-  
-                self.place_order("Buy", qty, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
-                send_telegram(f"🔄 LONG signal (mean-revert) on {self.symbol}: "
-                            f"price={close:.4f}, lower={lower:.4f}, slope={slope:.6f}, RSI={rsi:.1f}")
-   
-        # --- SHORT: цена коснулась верхней границы и отскочила вниз
-        if not self.position:
-            if (high >= upper - margin and
-                close < prev_close and                     # отскок вниз
-                slope < 0.5 * atr and                      # не сильный восходящий тренд
-                rsi > 48):                                 # не перепродан
-
-                logger.info(f"🔄 SHORT signal (mean-revert) on {self.symbol}: "
-                            f"price={close:.4f}, upper={upper:.4f}, slope={slope:.6f}, RSI={rsi:.1f}")
- 
-                sl_price = upper + atr * 1.0
-                tp_price = linreg - atr * 0.3
- 
-                if tp_price >= close:
-                   tp_price = close - atr * 0.8
-                if sl_price <= close:
-                   sl_price = close + atr * 1.2
- 
-                self.place_order("Sell", qty, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
-                send_telegram(f"🔄 SHORT signal (mean-revert) on {self.symbol}: "
-                            f"price={close:.4f}, upper={upper:.4f}, slope={slope:.6f}, RSI={rsi:.1f}")
-  
-    
-    def run(self):
-        """Главный цикл"""
-        self.logger.info(f"Starting LRC 5m bot for {self.symbol}")
-        while not self.stop_event.is_set():
-            try:
-                self.check_signals()
-                time.sleep(30)  # Проверка каждые 30 сек
-            except Exception as e:
-                self.logger.exception(f"Error in {self.symbol}: {e}")
-                time.sleep(60)
-        self.logger.info(f"Bot for {self.symbol} stopped")
-
-    def stop(self):
-        """Остановить цикл"""
-        self.stop_event.set()
-
-
-
 def send_telegram(text: str):
+    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+    TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         logger.error("TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID не заданы")
         return
-
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -267,26 +56,212 @@ def send_telegram(text: str):
         logger.error(f"Исключение при отправке в Telegram: {e}")
 
 
-if __name__ == "__main__":
-    # Замените на свои ключи Bybit
+class LRCBybitBot:
+    def __init__(self, api_key, api_secret, symbol='SOLUSDT', testnet=True):
+        self.session = HTTP(
+            testnet=testnet,
+            api_key=api_key,
+            api_secret=api_secret
+        )
+        self.symbol = symbol
+        self.lrc_period = 20
+        self.dev_mult = 2.0
+        self.rsi_period = 14
+        self.risk_per_trade = 0.01  # 1%
+        self.position = None
+        self.stop_event = threading.Event()
+        self.last_signal_time = 0
+        self.logger = logging.getLogger(f'lrc-bot.{self.symbol}')
 
+    def get_klines(self, interval='5', limit=100):
+        """Получить OHLCV данные"""
+        klines = self.session.get_kline(
+            category="linear",
+            symbol=self.symbol,
+            interval=interval,
+            limit=limit
+        )
+        df = pd.DataFrame(klines['result']['list'],
+                          columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'turnover'])
+        df = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
+        df = df.iloc[::-1].reset_index(drop=True)
+        return df
+
+    def calculate_lrc(self, highs, lows, closes, period):
+        """Вычисление Linear Regression Channel"""
+        linreg = talib.LINEARREG(closes, timeperiod=period)
+        slope = talib.LINEARREG_SLOPE(closes, timeperiod=period)
+        std = talib.STDDEV(closes, timeperiod=period)
+        upper = linreg + (std * self.dev_mult)
+        lower = linreg - (std * self.dev_mult)
+        return linreg.iloc[-1], upper.iloc[-1], lower.iloc[-1], slope.iloc[-1]
+
+    def calculate_rsi(self, closes):
+        return talib.RSI(closes, timeperiod=self.rsi_period).iloc[-1]
+
+    def calculate_atr(self):
+        df = self.get_klines(limit=50)
+        return talib.ATR(df['high'], df['low'], df['close'], timeperiod=14).iloc[-1]
+
+    def get_usdt_balance(self):
+        resp = self.session.get_wallet_balance(accountType="UNIFIED")
+        coins = resp['result']['list'][0]['coin']
+        usdt = next((c for c in coins if c['coin'] == 'USDT'), None)
+        return float(usdt['equity']) if usdt else 0.0
+
+    def get_position_size(self, sl_distance):
+        balance = self.get_usdt_balance() or 1000.0
+        risk_amount = balance * self.risk_per_trade
+        ticker = self.session.get_tickers(category="linear", symbol=self.symbol)['result']['list'][0]
+        price = float(ticker['lastPrice'])
+        qty_raw = risk_amount / sl_distance
+        qty = qty_raw / price
+        # Минимальные размеры (по Bybit specs для USDT-фьючерсов)
+        if self.symbol.startswith('BTC'):
+            return round(qty, 3)
+        elif self.symbol.startswith(('ETH', 'SOL')):
+            return round(qty, 2)
+        else:
+            return round(qty, 1)
+
+    def get_position(self):
+        positions = self.session.get_positions(category="linear", symbol=self.symbol)
+        pos_list = positions['result']['list']
+        if pos_list and float(pos_list[0]['size']) > 0:
+            return {
+                'side': pos_list[0]['side'],
+                'size': float(pos_list[0]['size']),
+                'entryPrice': float(pos_list[0]['avgPrice'])
+            }
+        return None
+
+    def place_order(self, side, qty, tp_price=None, sl_price=None):
+        try:
+            order = self.session.place_order(
+                category="linear",
+                symbol=self.symbol,
+                side=side,
+                orderType="Market",
+                qty=str(qty),
+                takeProfit=tp_price,
+                stopLoss=sl_price,
+                reduceOnly=False
+            )
+            logger.info(f"Order placed: {side} {qty} {self.symbol} TP:{tp_price} SL:{sl_price}")
+            return order
+        except Exception as e:
+            logger.error(f"Ошибка размещения ордера: {e}")
+            return None
+
+    def check_signals(self):
+        now = time.time()
+        # Cooldown 15 минут между сигналами
+        if now - self.last_signal_time < 15 * 60:
+            return
+
+        df = self.get_klines(limit=self.lrc_period + 20)
+        if len(df) < self.lrc_period + 5:
+            return
+
+        close = df['close'].iloc[-1]
+        prev_close = df['close'].iloc[-2]
+        high = df['high'].iloc[-1]
+        low = df['low'].iloc[-1]
+
+        linreg, upper, lower, slope = self.calculate_lrc(
+            df['high'], df['low'], df['close'], self.lrc_period
+        )
+        rsi = self.calculate_rsi(df['close'])
+        atr = self.calculate_atr()
+        atr_pct = atr / close * 100
+
+        # 🔴 Фильтр волатильности: не торговать, если ATR < 0.5%
+        if atr_pct < 0.5:
+            logger.info(f"{self.symbol}: низкая волатильность ({atr_pct:.2f}%) — пропуск")
+            return
+
+        self.position = self.get_position()
+        # 🔴 НЕ входить, если уже в позиции
+        if self.position:
+            return
+
+        margin = atr * 0.2
+        qty = None
+
+        # ✅ LONG: касание нижней границы + отскок
+        if (low <= lower + margin and
+            close > prev_close and
+            slope > -0.5 * atr and
+            30 < rsi < 52):
+
+            sl_price = lower - atr * 1.2
+            tp_price = linreg + atr * 0.6
+            # Защита от слишком близких уровней
+            sl_price = min(sl_price, close - atr * 1.0)
+            tp_price = max(tp_price, close + atr * 0.4)
+            sl_distance = close - sl_price
+            qty = self.get_position_size(sl_distance)
+
+            if qty > 0:
+                send_telegram(f"*🔄 LONG (Mean-Revert) on {self.symbol}*\n"
+                              f"Price: {close:.5f} | Lower: {lower:.5f}\n"
+                              f"Slope: {slope:.6f} | RSI: {rsi:.1f}\n"
+                              f"ATR: {atr:.4f} ({atr_pct:.2f}%)\n"
+                              f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+                self.place_order("Buy", qty, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
+                self.last_signal_time = now
+
+        # ✅ SHORT: касание верхней границы + отскок
+        elif (high >= upper - margin and
+              close < prev_close and
+              slope < 0.5 * atr and
+              48 < rsi < 70):
+
+            sl_price = upper + atr * 1.2
+            tp_price = linreg - atr * 0.6
+            sl_price = max(sl_price, close + atr * 1.0)
+            tp_price = min(tp_price, close - atr * 0.4)
+            sl_distance = sl_price - close
+            qty = self.get_position_size(sl_distance)
+
+            if qty > 0:
+                send_telegram(f"*🔄 SHORT (Mean-Revert) on {self.symbol}*\n"
+                              f"Price: {close:.5f} | Upper: {upper:.5f}\n"
+                              f"Slope: {slope:.6f} | RSI: {rsi:.1f}\n"
+                              f"ATR: {atr:.4f} ({atr_pct:.2f}%)\n"
+                              f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+                self.place_order("Sell", qty, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
+                self.last_signal_time = now
+
+    def run(self):
+        self.logger.info(f"Starting LRC Mean-Revert Bot for {self.symbol}")
+        while not self.stop_event.is_set():
+            try:
+                self.check_signals()
+                time.sleep(30)
+            except Exception as e:
+                self.logger.exception(f"Error in {self.symbol}: {e}")
+                time.sleep(60)
+        self.logger.info(f"Bot for {self.symbol} stopped")
+
+    def stop(self):
+        self.stop_event.set()
+
+
+if __name__ == "__main__":
     API_KEY = os.getenv('BYBIT_API_KEY')
     API_SECRET = os.getenv('BYBIT_API_SECRET')
+    if not API_KEY or not API_SECRET:
+        raise ValueError("Set BYBIT_API_KEY and BYBIT_API_SECRET environment variables")
+
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
-    if not API_KEY or not API_SECRET:
-        raise ValueError("Set BYBIT_API_KEY and BYBIT_SECRET_KEY environment variables")
 
     trading_mode = os.getenv('TRADING_MODE', 'testnet').lower()
     testnet_flag = trading_mode != 'live'
 
-#    symbols = load_symbols()
-    symbols = ["BTCUSDT","ETHUSDT","SOLUSDT","APTUSDT","TONUSDT","UNIUSDT"]
-
-    if not symbols:
-        logger.warning("No SYMBOLS found; defaulting to SOLUSDT")
-        symbols = [os.getenv('SYMBOL', 'SOLUSDT')]
+    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "APTUSDT", "TONUSDT", "UNIUSDT"]
+    logger.info(f"Запуск ботов для: {symbols}")
 
     bots = {}
     threads = []
@@ -299,7 +274,6 @@ if __name__ == "__main__":
         except Exception:
             logger.exception(f"Unhandled exception in bot {sym}")
 
-    # Запускаем боты в потоках
     for sym in symbols:
         t = threading.Thread(target=start_bot, args=(sym,), name=f"Bot-{sym}")
         t.start()
@@ -310,9 +284,9 @@ if __name__ == "__main__":
         while any(t.is_alive() for t in threads):
             time.sleep(1)
     except KeyboardInterrupt:
-        logger.info("KeyboardInterrupt received, stopping bots...")
+        logger.info("Остановка по Ctrl+C...")
         for b in bots.values():
             b.stop()
         for t in threads:
             t.join(timeout=10)
-        logger.info("All bots stopped")
+        logger.info("Все боты остановлены.")
