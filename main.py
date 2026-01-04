@@ -16,29 +16,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger('lrc-bot')
 load_dotenv()
 
-def load_symbols():
-    """Загрузить SYMBOLS из окружения или из .env (поддерживает список и CSV)."""
-    env = os.getenv('SYMBOLS')
-    if env:
-        s = env.strip().strip('[]').replace('"', '').replace("'", "")
-        parts = [p.strip() for p in s.split(',') if p.strip()]
-        return [p.upper() for p in parts]
-    # fallback: parse .env file
-    try:
-        with open('.env', 'r', encoding='utf-8') as f:
-            text = f.read()
-            m = re.search(r'SYMBOLS\s*=\s*\[(.*?)\]', text, re.S)
-            if m:
-                content = m.group(1)
-                parts = re.findall(r'["\'](.*?)["\']', content)
-                return [p.upper() for p in parts]
-    except FileNotFoundError:
-        pass
-    return []
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 def send_telegram(text: str):
-    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-    TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         logger.error("TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID не заданы")
         return
@@ -51,9 +32,9 @@ def send_telegram(text: str):
     try:
         resp = requests.post(url, json=payload, timeout=10)
         if resp.status_code != 200:
-            logger.error(f"Ошибка отправки в Telegram: {resp.status_code} {resp.text}")
+            logger.error(f"Ошибка Telegram: {resp.status_code} {resp.text}")
     except Exception as e:
-        logger.error(f"Исключение при отправке в Telegram: {e}")
+        logger.error(f"Исключение Telegram: {e}")
 
 
 class LRCBybitBot:
@@ -74,7 +55,6 @@ class LRCBybitBot:
         self.logger = logging.getLogger(f'lrc-bot.{self.symbol}')
 
     def get_klines(self, interval='5', limit=100):
-        """Получить OHLCV данные"""
         klines = self.session.get_kline(
             category="linear",
             symbol=self.symbol,
@@ -88,7 +68,6 @@ class LRCBybitBot:
         return df
 
     def calculate_lrc(self, highs, lows, closes, period):
-        """Вычисление Linear Regression Channel"""
         linreg = talib.LINEARREG(closes, timeperiod=period)
         slope = talib.LINEARREG_SLOPE(closes, timeperiod=period)
         std = talib.STDDEV(closes, timeperiod=period)
@@ -107,16 +86,15 @@ class LRCBybitBot:
         resp = self.session.get_wallet_balance(accountType="UNIFIED")
         coins = resp['result']['list'][0]['coin']
         usdt = next((c for c in coins if c['coin'] == 'USDT'), None)
-        return float(usdt['equity']) if usdt else 0.0
+        return float(usdt['equity']) if usdt else 1000.0
 
     def get_position_size(self, sl_distance):
-        balance = self.get_usdt_balance() or 1000.0
+        balance = self.get_usdt_balance()
         risk_amount = balance * self.risk_per_trade
         ticker = self.session.get_tickers(category="linear", symbol=self.symbol)['result']['list'][0]
         price = float(ticker['lastPrice'])
         qty_raw = risk_amount / sl_distance
         qty = qty_raw / price
-        # Минимальные размеры (по Bybit specs для USDT-фьючерсов)
         if self.symbol.startswith('BTC'):
             return round(qty, 3)
         elif self.symbol.startswith(('ETH', 'SOL')):
@@ -147,15 +125,15 @@ class LRCBybitBot:
                 stopLoss=sl_price,
                 reduceOnly=False
             )
-            logger.info(f"Order placed: {side} {qty} {self.symbol} TP:{tp_price} SL:{sl_price}")
+            logger.info(f"✅ Order placed: {side} {qty} {self.symbol} TP:{tp_price} SL:{sl_price}")
             return order
         except Exception as e:
-            logger.error(f"Ошибка размещения ордера: {e}")
+            logger.error(f"❌ Error placing order: {e}")
             return None
 
     def check_signals(self):
         now = time.time()
-        # Cooldown 15 минут между сигналами
+        # Cooldown: минимум 15 минут между сигналами
         if now - self.last_signal_time < 15 * 60:
             return
 
@@ -175,20 +153,24 @@ class LRCBybitBot:
         atr = self.calculate_atr()
         atr_pct = atr / close * 100
 
-        # 🔴 Фильтр волатильности: не торговать, если ATR < 0.5%
-        if atr_pct < 0.5:
-            logger.info(f"{self.symbol}: низкая волатильность ({atr_pct:.2f}%) — пропуск")
+        # ✅ Динамическая оценка волатильности — решает проблему "пропущенного движения"
+        short_range = (df['high'].iloc[-5:].max() - df['low'].iloc[-5:].min()) / close * 100
+        roc_15m = (close / df['close'].iloc[-4] - 1) * 100 if len(df) >= 5 else 0
+        effective_vol = max(atr_pct, short_range * 0.7)
+        volatility_override = abs(roc_15m) >= 0.8  # если движение >0.8% за 15 мин — разрешаем вход
+
+        if not volatility_override and effective_vol < 0.4:
+            logger.info(f"⏸ {self.symbol}: low vol ({effective_vol:.2f}%) + weak ROC ({roc_15m:+.2f}%) → skipping")
             return
 
         self.position = self.get_position()
-        # 🔴 НЕ входить, если уже в позиции
+        # ✅ Главное: не входить, если уже в позиции
         if self.position:
             return
 
         margin = atr * 0.2
-        qty = None
 
-        # ✅ LONG: касание нижней границы + отскок
+        # ✅ LONG: касание нижней границы + отскок вверх
         if (low <= lower + margin and
             close > prev_close and
             slope > -0.5 * atr and
@@ -196,7 +178,6 @@ class LRCBybitBot:
 
             sl_price = lower - atr * 1.2
             tp_price = linreg + atr * 0.6
-            # Защита от слишком близких уровней
             sl_price = min(sl_price, close - atr * 1.0)
             tp_price = max(tp_price, close + atr * 0.4)
             sl_distance = close - sl_price
@@ -205,13 +186,13 @@ class LRCBybitBot:
             if qty > 0:
                 send_telegram(f"*🔄 LONG (Mean-Revert) on {self.symbol}*\n"
                               f"Price: {close:.5f} | Lower: {lower:.5f}\n"
-                              f"Slope: {slope:.6f} | RSI: {rsi:.1f}\n"
-                              f"ATR: {atr:.4f} ({atr_pct:.2f}%)\n"
+                              f"Slope: {slope:+.6f} | RSI: {rsi:.1f}\n"
+                              f"ATR: {atr:.4f} ({effective_vol:.2f}%) | ROC15: {roc_15m:+.2f}%\n"
                               f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
                 self.place_order("Buy", qty, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
                 self.last_signal_time = now
 
-        # ✅ SHORT: касание верхней границы + отскок
+        # ✅ SHORT: касание верхней границы + отскок вниз
         elif (high >= upper - margin and
               close < prev_close and
               slope < 0.5 * atr and
@@ -227,22 +208,24 @@ class LRCBybitBot:
             if qty > 0:
                 send_telegram(f"*🔄 SHORT (Mean-Revert) on {self.symbol}*\n"
                               f"Price: {close:.5f} | Upper: {upper:.5f}\n"
-                              f"Slope: {slope:.6f} | RSI: {rsi:.1f}\n"
-                              f"ATR: {atr:.4f} ({atr_pct:.2f}%)\n"
+                              f"Slope: {slope:+.6f} | RSI: {rsi:.1f}\n"
+                              f"ATR: {atr:.4f} ({effective_vol:.2f}%) | ROC15: {roc_15m:+.2f}%\n"
                               f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
                 self.place_order("Sell", qty, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
                 self.last_signal_time = now
 
+        else: logger.info(f"{self.symbol} vol: ATR={atr_pct:.2f}%, range={short_range_pct:.2f}%, ROC15={roc_15m:+.2f}%")
+
     def run(self):
-        self.logger.info(f"Starting LRC Mean-Revert Bot for {self.symbol}")
+        self.logger.info(f"🚀 Starting LRC Mean-Revert Bot for {self.symbol}")
         while not self.stop_event.is_set():
             try:
                 self.check_signals()
                 time.sleep(30)
             except Exception as e:
-                self.logger.exception(f"Error in {self.symbol}: {e}")
+                self.logger.exception(f"💥 Error in {self.symbol}: {e}")
                 time.sleep(60)
-        self.logger.info(f"Bot for {self.symbol} stopped")
+        self.logger.info(f"⏹ Bot for {self.symbol} stopped")
 
     def stop(self):
         self.stop_event.set()
@@ -254,14 +237,11 @@ if __name__ == "__main__":
     if not API_KEY or not API_SECRET:
         raise ValueError("Set BYBIT_API_KEY and BYBIT_API_SECRET environment variables")
 
-    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-    TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
     trading_mode = os.getenv('TRADING_MODE', 'testnet').lower()
     testnet_flag = trading_mode != 'live'
 
-    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "APTUSDT", "TONUSDT", "UNIUSDT"]
-    logger.info(f"Запуск ботов для: {symbols}")
+    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "TONUSDT"]  # ❌ APT и UNI отключены (низкая ликвидность)
+    logger.info(f"Starting bots for: {symbols}")
 
     bots = {}
     threads = []
@@ -284,9 +264,9 @@ if __name__ == "__main__":
         while any(t.is_alive() for t in threads):
             time.sleep(1)
     except KeyboardInterrupt:
-        logger.info("Остановка по Ctrl+C...")
+        logger.info("🛑 Stopping bots...")
         for b in bots.values():
             b.stop()
         for t in threads:
             t.join(timeout=10)
-        logger.info("Все боты остановлены.")
+        logger.info("✅ All bots stopped.")
