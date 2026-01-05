@@ -53,6 +53,7 @@ class LRCBybitBot:
         self.stop_event = threading.Event()
         self.last_signal_time = 0
         self.logger = logging.getLogger(f'lrc-bot.{self.symbol}')
+        self.pending_order = None
 
     def get_klines(self, interval='5', limit=100):
         klines = self.session.get_kline(
@@ -125,6 +126,7 @@ class LRCBybitBot:
                 stopLoss=sl_price,
                 reduceOnly=False
             )
+            self.pending_order = {'side': side, 'qty': qty, 'time': time.time()}
             logger.info(f"✅ Order placed: {side} {qty} {self.symbol} TP:{tp_price} SL:{sl_price}")
             return order
         except Exception as e:
@@ -133,6 +135,7 @@ class LRCBybitBot:
 
     def check_signals(self):
         now = time.time()
+
         # Cooldown: минимум 15 минут между сигналами
         if now - self.last_signal_time < 15 * 60:
             return
@@ -164,10 +167,11 @@ class LRCBybitBot:
             logger.info(f"⏸ {self.symbol}: low vol ({effective_vol:.2f}%) + weak ROC ({roc_15m:+.2f}%) → skipping")
             return
 
-        self.position = self.get_position()
+
         # ✅ Главное: не входить, если уже в позиции
-        if self.position:
+        if self.pending_order and (now - self.pending_order['time']) < 60:
             return
+
 
         margin = atr * 0.2
 
