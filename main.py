@@ -220,7 +220,7 @@ class LRCBybitBot:
             tp_price = linreg - atr * self.tp_mult
             sl_price = max(sl_price, close + atr * max(1.0, self.sl_mult - 0.3))
             tp_price = min(tp_price, close - atr * max(0.4, self.tp_mult - 0.2))
-            sl_dist_usd = min((sl_price - close),get_usdt_balance())
+            sl_dist_usd = min((sl_price - close),self.get_usdt_balance())
             qty = self.get_position_size(sl_dist_usd)
 
             if qty > 0:
