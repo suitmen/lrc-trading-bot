@@ -61,7 +61,7 @@ class LRCBybitBot:
             self.sl_mult = 1.2
             self.tp_mult = 0.6
         elif self.symbol == "ETHUSDT":
-            self.min_qty = 0.1   # ~0.1 ETH ≈ $300 при цене $3000
+            self.min_qty = 0.1
             self.sl_mult = 1.2
             self.tp_mult = 0.6
         else:
@@ -69,7 +69,7 @@ class LRCBybitBot:
             self.sl_mult = 1.2
             self.tp_mult = 0.6
 
-    def get_klines(self, interval='5', limit=100):
+    def get_klines(self, interval='5', limit=250):
         klines = self.session.get_kline(category="linear", symbol=self.symbol, interval=interval, limit=limit)
         df = pd.DataFrame(
             klines['result']['list'],
@@ -101,8 +101,11 @@ class LRCBybitBot:
         return float(usdt['equity']) if usdt else 1000.0
 
     def get_position_size(self, sl_distance_usd):
+        if sl_distance_usd <= 0:
+            return 0
         balance = self.get_usdt_balance()
         risk_amount = balance * self.risk_per_trade
+        logger.info(f"rist amount : {risk_amount}")
         qty_raw = risk_amount / sl_distance_usd
         ticker = self.session.get_tickers(category="linear", symbol=self.symbol)['result']['list'][0]
         price = float(ticker['lastPrice'])
@@ -112,8 +115,10 @@ class LRCBybitBot:
             return round(qty, 3)
         elif self.symbol in ["TONUSDT", "DOGEUSDT"]:
             return round(qty, 1)
-        elif self.symbol in ["ETHUSDT", "APTUSDT"]:
-            return round(qty, 0) if self.symbol == "APTUSDT" else round(qty, 2)
+        elif self.symbol == "APTUSDT":
+            return round(qty, 0)
+        elif self.symbol == "ETHUSDT":
+            return round(qty, 2)
         else:
             return round(qty, 2)
 
@@ -154,8 +159,8 @@ class LRCBybitBot:
         if self.pending_order and (now - self.pending_order['time']) < 60:
             return
 
-        df = self.get_klines(limit=self.lrc_period + 20)
-        if len(df) < self.lrc_period + 5:
+        df = self.get_klines(limit=250)
+        if len(df) < 200:
             return
 
         close = df['close'].iloc[-1]
@@ -170,7 +175,11 @@ class LRCBybitBot:
         atr = self.calculate_atr()
         atr_pct = atr / close * 100
 
-        # 🔥 Динамическая волатильность
+        # Новые индикаторы
+        ema200 = talib.EMA(df['close'], timeperiod=200).iloc[-1]
+        adx = talib.ADX(df['high'], df['low'], df['close'], timeperiod=14).iloc[-1]
+
+        # Волатильность
         short_range = (df['high'].iloc[-5:].max() - df['low'].iloc[-5:].min()) / close * 100
         roc_15m = (close / df['close'].iloc[-4] - 1) * 100 if len(df) >= 5 else 0
         effective_vol = max(atr_pct, short_range * 0.7)
@@ -187,51 +196,61 @@ class LRCBybitBot:
 
         margin = atr * 0.2
 
-        # ✅ LONG: касание нижней границы + отскок вверх
+        # === LONG
         if (low <= lower + margin and
             close > prev_close and
-            slope > -0.5 * atr and
-            (35 < rsi < 52 if self.symbol == 'APTUSDT' else 30 < rsi < 52)):
+            slope > -0.4 * atr and
+            close < ema200 and
+            adx < 25 and
+            (35 < rsi < 55 if self.symbol == 'APTUSDT' else 30 < rsi < 55)):
 
             sl_price = lower - atr * self.sl_mult
             tp_price = linreg + atr * self.tp_mult
-            sl_price = min(sl_price, close - atr * max(1.0, self.sl_mult - 0.3))
-            tp_price = max(tp_price, close + atr * max(0.4, self.tp_mult - 0.2))
-            sl_dist_usd = min((close - sl_price),get_usdt_balance())
+            sl_price = min(sl_price, close - atr * max(0.8, self.sl_mult - 0.3))
+            tp_price = max(tp_price, close + atr * max(0.5, self.tp_mult))
+
+            sl_dist_usd = (close - sl_price)
             qty = self.get_position_size(sl_dist_usd)
+            if qty <= 0:
+                return
 
-            if qty > 0:
-                send_telegram(
-                    f"*🔄 LONG on {self.symbol}*\n"
-                    f"Price: {close:.5f} | Lower: {lower:.5f}\n"
-                    f"Slope: {slope:+.6f} | RSI: {rsi:.1f}\n"
-                    f"ATR%: {effective_vol:.2f} | ROC15: {roc_15m:+.2f}%"
-                )
-                self.place_order("Buy", qty, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
-                self.last_signal_time = now
+            send_telegram(
+                f"*🔄 LONG on {self.symbol}*\n"
+                f"Price: {close:.5f} | Lower: {lower:.5f}\n"
+                f"Slope: {slope:+.6f} | RSI: {rsi:.1f}\n"
+                f"EMA200: {ema200:.5f} | ADX: {adx:.1f}\n"
+                f"ATR%: {effective_vol:.2f} | ROC15: {roc_15m:+.2f}%"
+            )
+            self.place_order("Buy", qty, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
+            self.last_signal_time = now
 
-        # ✅ SHORT: касание верхней границы + отскок вниз
+        # === SHORT
         elif (high >= upper - margin and
               close < prev_close and
-              slope < 0.5 * atr and
-              (48 < rsi < 65 if self.symbol == 'APTUSDT' else 48 < rsi < 70)):
+              slope < 0.4 * atr and
+              close > ema200 and
+              adx < 25 and
+              (45 < rsi < 65 if self.symbol == 'APTUSDT' else 45 < rsi < 70)):
 
             sl_price = upper + atr * self.sl_mult
             tp_price = linreg - atr * self.tp_mult
-            sl_price = max(sl_price, close + atr * max(1.0, self.sl_mult - 0.3))
-            tp_price = min(tp_price, close - atr * max(0.4, self.tp_mult - 0.2))
-            sl_dist_usd = min((sl_price - close),self.get_usdt_balance())
-            qty = self.get_position_size(sl_dist_usd)
+            sl_price = max(sl_price, close + atr * max(0.8, self.sl_mult - 0.3))
+            tp_price = min(tp_price, close - atr * max(0.5, self.tp_mult))
 
-            if qty > 0:
-                send_telegram(
-                    f"*🔄 SHORT on {self.symbol}*\n"
-                    f"Price: {close:.5f} | Upper: {upper:.5f}\n"
-                    f"Slope: {slope:+.6f} | RSI: {rsi:.1f}\n"
-                    f"ATR%: {effective_vol:.2f} | ROC15: {roc_15m:+.2f}%"
-                )
-                self.place_order("Sell", qty, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
-                self.last_signal_time = now
+            sl_dist_usd = (sl_price - close)
+            qty = self.get_position_size(sl_dist_usd)
+            if qty <= 0:
+                return
+
+            send_telegram(
+                f"*🔄 SHORT on {self.symbol}*\n"
+                f"Price: {close:.5f} | Upper: {upper:.5f}\n"
+                f"Slope: {slope:+.6f} | RSI: {rsi:.1f}\n"
+                f"EMA200: {ema200:.5f} | ADX: {adx:.1f}\n"
+                f"ATR%: {effective_vol:.2f} | ROC15: {roc_15m:+.2f}%"
+            )
+            self.place_order("Sell", qty, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
+            self.last_signal_time = now
 
     def run(self):
         self.logger.info(f"🚀 Starting LRC Mean-Revert Bot for {self.symbol}")
@@ -255,10 +274,7 @@ if __name__ == "__main__":
         raise ValueError("Set BYBIT_API_KEY and BYBIT_API_SECRET in .env")
 
     testnet = os.getenv('TRADING_MODE', 'testnet').lower() != 'live'
-
-    # ✅ Оптимальный набор: TON, ETH, DOGE, APT
     symbols = ["TONUSDT", "ETHUSDT", "DOGEUSDT", "APTUSDT"]
-
     logger.info(f"▶ Starting bots for: {symbols}")
 
     bots = {}
