@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 from pybit.unified_trading import HTTP
 import requests
 import talib
-from datetime import datetime
 import logging
 
 logging.basicConfig(
@@ -25,11 +24,7 @@ def send_telegram(text: str):
         logger.error("TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID не заданы")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "Markdown",
-    }
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
     try:
         resp = requests.post(url, json=payload, timeout=10)
         if resp.status_code != 200:
@@ -48,26 +43,25 @@ class LRCBybitBot:
         self.risk_per_trade = 0.01
         self.stop_event = threading.Event()
         self.last_signal_time = 0
-        self.pending_order = None
         self.logger = logging.getLogger(f'lrc-bot.{self.symbol}')
 
         # Настройки по символу
         if self.symbol == "APTUSDT":
             self.min_qty = 500.0
-            self.sl_mult = 1.5
-            self.tp_mult = 0.8
+            self.sl_mult = 1.2  # уменьшено для улучшения RR
+            self.tp_mult = 0.4  # сближено
         elif self.symbol in ["TONUSDT", "DOGEUSDT"]:
             self.min_qty = 100.0
             self.sl_mult = 1.2
-            self.tp_mult = 0.6
+            self.tp_mult = 0.4
         elif self.symbol == "ETHUSDT":
             self.min_qty = 0.1
             self.sl_mult = 1.2
-            self.tp_mult = 0.6
+            self.tp_mult = 0.4
         else:
             self.min_qty = 1.0
             self.sl_mult = 1.2
-            self.tp_mult = 0.6
+            self.tp_mult = 0.4
 
     def get_klines(self, interval='5', limit=250):
         klines = self.session.get_kline(category="linear", symbol=self.symbol, interval=interval, limit=limit)
@@ -78,6 +72,23 @@ class LRCBybitBot:
         df = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
         df = df.iloc[::-1].reset_index(drop=True)
         return df
+
+    def calculate_ema_filter(self):
+        df = self.get_klines(limit=250)
+        if len(df) < 201:
+            return 'neutral', df['close'].iloc[-1], None, None
+
+        close = df['close'].iloc[-1]
+        ema50 = talib.EMA(df['close'], timeperiod=50).iloc[-1]
+        ema200 = talib.EMA(df['close'], timeperiod=200).iloc[-1]
+
+        # Буфер 0.1% для устойчивости
+        if ema50 > ema200 * 1.001 and close > ema50:
+            return 'up', close, ema50, ema200
+        elif ema50 < ema200 * 0.999 and close < ema50:
+            return 'down', close, ema50, ema200
+        else:
+            return 'neutral', close, ema50, ema200
 
     def calculate_lrc(self, highs, lows, closes, period):
         linreg = talib.LINEARREG(closes, timeperiod=period)
@@ -105,18 +116,20 @@ class LRCBybitBot:
             return 0
         balance = self.get_usdt_balance()
         risk_amount = balance * self.risk_per_trade
-        logger.info(f"rist amount : {risk_amount}")
         qty_raw = risk_amount / sl_distance_usd
         ticker = self.session.get_tickers(category="linear", symbol=self.symbol)['result']['list'][0]
         price = float(ticker['lastPrice'])
         qty = qty_raw / price
-        qty = max(qty, self.min_qty)
+        # Ограничение: не нарушать min_qty, но и не превышать разумный риск
+        if qty < self.min_qty:
+            # Если расчётный размер < min_qty — не торгуем
+            return 0
         if self.symbol == "BTCUSDT":
             return round(qty, 3)
         elif self.symbol in ["TONUSDT", "DOGEUSDT"]:
             return round(qty, 1)
         elif self.symbol == "APTUSDT":
-            return round(qty, 0)
+            return int(qty)
         elif self.symbol == "ETHUSDT":
             return round(qty, 2)
         else:
@@ -146,7 +159,6 @@ class LRCBybitBot:
                 reduceOnly=False
             )
             logger.info(f"✅ {side} {qty} {self.symbol} → TP:{tp_price} SL:{sl_price}")
-            self.pending_order = {'side': side, 'qty': qty, 'time': time.time()}
             return order
         except Exception as e:
             logger.error(f"🛑 Order failed: {e}")
@@ -156,18 +168,20 @@ class LRCBybitBot:
         now = time.time()
         if now - self.last_signal_time < 15 * 60:
             return
-        if self.pending_order and (now - self.pending_order['time']) < 60:
-            return
 
-        df = self.get_klines(limit=250)
-        if len(df) < 200:
+        # Проверка открытой позиции — НИКОГДА не входить, если позиция открыта
+        real_pos = self.get_position()
+        if real_pos:
+            return  # ждём TP/SL
+
+        df = self.get_klines(limit=self.lrc_period + 30)
+        if len(df) < self.lrc_period + 10:
             return
 
         close = df['close'].iloc[-1]
         prev_close = df['close'].iloc[-2]
         high = df['high'].iloc[-1]
         low = df['low'].iloc[-1]
-
         linreg, upper, lower, slope = self.calculate_lrc(
             df['high'], df['low'], df['close'], self.lrc_period
         )
@@ -175,11 +189,6 @@ class LRCBybitBot:
         atr = self.calculate_atr()
         atr_pct = atr / close * 100
 
-        # Новые индикаторы
-        ema200 = talib.EMA(df['close'], timeperiod=200).iloc[-1]
-        adx = talib.ADX(df['high'], df['low'], df['close'], timeperiod=14).iloc[-1]
-
-        # Волатильность
         short_range = (df['high'].iloc[-5:].max() - df['low'].iloc[-5:].min()) / close * 100
         roc_15m = (close / df['close'].iloc[-4] - 1) * 100 if len(df) >= 5 else 0
         effective_vol = max(atr_pct, short_range * 0.7)
@@ -189,71 +198,63 @@ class LRCBybitBot:
             logger.info(f"⏸ {self.symbol}: vol={effective_vol:.2f}%, ROC15={roc_15m:+.2f}% → skip")
             return
 
-        real_pos = self.get_position()
-        if real_pos:
-            self.pending_order = None
-            return
+        # === EMA TREND FILTER ===
+        trend, _, ema50, ema200 = self.calculate_ema_filter()
+        allow_long = (trend != 'down')
+        allow_short = (trend != 'up')
 
         margin = atr * 0.2
 
-        # === LONG
-        if (low <= lower + margin and
-            close > prev_close and
-            slope > -0.4 * atr and
-            close < ema200 and
-            adx < 25 and
-            (35 < rsi < 55 if self.symbol == 'APTUSDT' else 30 < rsi < 55)):
+        # ✅ LONG: только если тренд не вниз
+        if allow_long and (low <= lower + margin and
+                           close > prev_close and
+                           slope > -0.5 * atr and
+                           (35 < rsi < 52 if self.symbol == 'APTUSDT' else 30 < rsi < 52)):
 
             sl_price = lower - atr * self.sl_mult
             tp_price = linreg + atr * self.tp_mult
-            sl_price = min(sl_price, close - atr * max(0.8, self.sl_mult - 0.3))
-            tp_price = max(tp_price, close + atr * max(0.5, self.tp_mult))
+            sl_price = min(sl_price, close - atr * max(1.0, self.sl_mult - 0.3))
+            tp_price = max(tp_price, close + atr * max(0.3, self.tp_mult))
 
-            sl_dist_usd = (close - sl_price)
+            sl_dist_usd = close - sl_price
             qty = self.get_position_size(sl_dist_usd)
-            if qty <= 0:
-                return
+            if qty > 0:
+                send_telegram(
+                    f"*🔄 LONG on {self.symbol}*\n"
+                    f"Price: {close:.5f} | Lower: {lower:.5f}\n"
+                    f"Slope: {slope:+.6f} | RSI: {rsi:.1f}\n"
+                    f"Trend: {trend} | ATR%: {effective_vol:.2f}%\n"
+                    f"TP: {tp_price:.5f} | SL: {sl_price:.5f}"
+                )
+                self.place_order("Buy", qty, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
+                self.last_signal_time = now
 
-            send_telegram(
-                f"*🔄 LONG on {self.symbol}*\n"
-                f"Price: {close:.5f} | Lower: {lower:.5f}\n"
-                f"Slope: {slope:+.6f} | RSI: {rsi:.1f}\n"
-                f"EMA200: {ema200:.5f} | ADX: {adx:.1f}\n"
-                f"ATR%: {effective_vol:.2f} | ROC15: {roc_15m:+.2f}%"
-            )
-            self.place_order("Buy", qty, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
-            self.last_signal_time = now
-
-        # === SHORT
-        elif (high >= upper - margin and
-              close < prev_close and
-              slope < 0.4 * atr and
-              close > ema200 and
-              adx < 25 and
-              (45 < rsi < 65 if self.symbol == 'APTUSDT' else 45 < rsi < 70)):
+        # ✅ SHORT: только если тренд не вверх
+        elif allow_short and (high >= upper - margin and
+                              close < prev_close and
+                              slope < 0.5 * atr and
+                              (48 < rsi < 65 if self.symbol == 'APTUSDT' else 48 < rsi < 70)):
 
             sl_price = upper + atr * self.sl_mult
             tp_price = linreg - atr * self.tp_mult
-            sl_price = max(sl_price, close + atr * max(0.8, self.sl_mult - 0.3))
-            tp_price = min(tp_price, close - atr * max(0.5, self.tp_mult))
+            sl_price = max(sl_price, close + atr * max(1.0, self.sl_mult - 0.3))
+            tp_price = min(tp_price, close - atr * max(0.3, self.tp_mult))
 
-            sl_dist_usd = (sl_price - close)
+            sl_dist_usd = sl_price - close
             qty = self.get_position_size(sl_dist_usd)
-            if qty <= 0:
-                return
-
-            send_telegram(
-                f"*🔄 SHORT on {self.symbol}*\n"
-                f"Price: {close:.5f} | Upper: {upper:.5f}\n"
-                f"Slope: {slope:+.6f} | RSI: {rsi:.1f}\n"
-                f"EMA200: {ema200:.5f} | ADX: {adx:.1f}\n"
-                f"ATR%: {effective_vol:.2f} | ROC15: {roc_15m:+.2f}%"
-            )
-            self.place_order("Sell", qty, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
-            self.last_signal_time = now
+            if qty > 0:
+                send_telegram(
+                    f"*🔄 SHORT on {self.symbol}*\n"
+                    f"Price: {close:.5f} | Upper: {upper:.5f}\n"
+                    f"Slope: {slope:+.6f} | RSI: {rsi:.1f}\n"
+                    f"Trend: {trend} | ATR%: {effective_vol:.2f}%\n"
+                    f"TP: {tp_price:.5f} | SL: {sl_price:.5f}"
+                )
+                self.place_order("Sell", qty, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
+                self.last_signal_time = now
 
     def run(self):
-        self.logger.info(f"🚀 Starting LRC Mean-Revert Bot for {self.symbol}")
+        self.logger.info(f"🚀 Starting LRC Mean-Revert Bot (EMA-filtered) for {self.symbol}")
         while not self.stop_event.is_set():
             try:
                 self.check_signals()
@@ -275,7 +276,7 @@ if __name__ == "__main__":
 
     testnet = os.getenv('TRADING_MODE', 'testnet').lower() != 'live'
     symbols = ["TONUSDT", "ETHUSDT", "DOGEUSDT", "APTUSDT"]
-    logger.info(f"▶ Starting bots for: {symbols}")
+    logger.info(f"▶ Starting EMA-filtered bots for: {symbols}")
 
     bots = {}
     threads = []
