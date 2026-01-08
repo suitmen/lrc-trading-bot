@@ -194,7 +194,15 @@ class LRCBybitBot:
         effective_vol = max(atr_pct, short_range * 0.7)
         volatility_override = abs(roc_15m) >= 0.8
 
-        if not volatility_override and effective_vol < 0.4:
+        # Порог волатильности по символу
+        vol_threshold = 0.30
+        if self.symbol in ["TONUSDT", "ETHUSDT"]:
+            vol_threshold = 0.25  # более чувствительный порог
+        elif self.symbol in ["DOGEUSDT", "APTUSDT"]:
+            vol_threshold = 0.28
+
+        if not volatility_override and effective_vol < vol_threshold:
+#        if not volatility_override and effective_vol < 0.4:
             logger.info(f"⏸ {self.symbol}: vol={effective_vol:.2f}%, ROC15={roc_15m:+.2f}% → skip")
             return
 
