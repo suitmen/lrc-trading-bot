@@ -50,7 +50,7 @@ class LRCBybitBot:
             self.min_qty = 500.0
             self.sl_mult = 1.2  # уменьшено для улучшения RR
             self.tp_mult = 0.4  # сближено
-        elif self.symbol in ["TONUSDT", "DOGEUSDT"]:
+        elif self.symbol in ["TONUSDT", "DOGEUSDT","RNDRUSDT"]:
             self.min_qty = 100.0
             self.sl_mult = 1.2
             self.tp_mult = 0.4
@@ -119,14 +119,14 @@ class LRCBybitBot:
         qty_raw = risk_amount / sl_distance_usd
         ticker = self.session.get_tickers(category="linear", symbol=self.symbol)['result']['list'][0]
         price = float(ticker['lastPrice'])
-        qty = qty_raw / price
+        qty = max(qty_raw / price,5000.0)
         # Ограничение: не нарушать min_qty, но и не превышать разумный риск
         if qty < self.min_qty:
             # Если расчётный размер < min_qty — не торгуем
             return 0
         if self.symbol == "BTCUSDT":
             return round(qty, 3)
-        elif self.symbol in ["TONUSDT", "DOGEUSDT"]:
+        elif self.symbol in ["TONUSDT", "DOGEUSDT", "RNDRUSDT"]:
             return round(qty, 1)
         elif self.symbol == "APTUSDT":
             return int(qty)
@@ -196,7 +196,7 @@ class LRCBybitBot:
 
         # Порог волатильности по символу
         vol_threshold = 0.30
-        if self.symbol in ["TONUSDT", "ETHUSDT"]:
+        if self.symbol in ["TONUSDT", "ETHUSDT", "RNDRUSDT"]:
             vol_threshold = 0.25  # более чувствительный порог
         elif self.symbol in ["DOGEUSDT", "APTUSDT"]:
             vol_threshold = 0.28
@@ -283,7 +283,7 @@ if __name__ == "__main__":
         raise ValueError("Set BYBIT_API_KEY and BYBIT_API_SECRET in .env")
 
     testnet = os.getenv('TRADING_MODE', 'testnet').lower() != 'live'
-    symbols = ["TONUSDT", "ETHUSDT", "DOGEUSDT", "APTUSDT"]
+    symbols = ["TONUSDT", "ETHUSDT", "DOGEUSDT", "RNDRUSDT"]
     logger.info(f"▶ Starting EMA-filtered bots for: {symbols}")
 
     bots = {}
