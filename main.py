@@ -119,7 +119,7 @@ class LRCBybitBot:
         qty_raw = risk_amount / sl_distance_usd
         ticker = self.session.get_tickers(category="linear", symbol=self.symbol)['result']['list'][0]
         price = float(ticker['lastPrice'])
-        qty = max(qty_raw / price,5000.0)
+        qty = qty_raw / price
         # Ограничение: не нарушать min_qty, но и не превышать разумный риск
         if qty < self.min_qty:
             # Если расчётный размер < min_qty — не торгуем
