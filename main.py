@@ -50,7 +50,7 @@ class LRCBybitBot:
             self.min_qty = 500.0
             self.sl_mult = 1.2  # уменьшено для улучшения RR
             self.tp_mult = 0.4  # сближено
-        elif self.symbol in ["TONUSDT", "DOGEUSDT","RNDRUSDT"]:
+        elif self.symbol in ["TONUSDT", "DOGEUSDT","RNDRUSDT","SHIBUSDT", "FLOKIUSDT", "BONKUSDT"]:
             self.min_qty = 100.0
             self.sl_mult = 1.2
             self.tp_mult = 0.4
@@ -126,7 +126,7 @@ class LRCBybitBot:
             return 0
         if self.symbol == "BTCUSDT":
             return round(qty, 3)
-        elif self.symbol in ["TONUSDT", "DOGEUSDT", "RNDRUSDT"]:
+        elif self.symbol in ["TONUSDT", "DOGEUSDT", "RNDRUSDT","SHIBUSDT", "FLOKIUSDT", "BONKUSDT"]:
             return round(qty, 1)
         elif self.symbol == "APTUSDT":
             return int(qty)
@@ -198,7 +198,7 @@ class LRCBybitBot:
         vol_threshold = 0.30
         if self.symbol in ["TONUSDT", "ETHUSDT", "RNDRUSDT"]:
             vol_threshold = 0.25  # более чувствительный порог
-        elif self.symbol in ["DOGEUSDT", "APTUSDT"]:
+        elif self.symbol in ["DOGEUSDT", "APTUSDT","SHIBUSDT", "FLOKIUSDT", "BONKUSDT"]:
             vol_threshold = 0.28
 
         if not volatility_override and effective_vol < vol_threshold:
@@ -283,7 +283,7 @@ if __name__ == "__main__":
         raise ValueError("Set BYBIT_API_KEY and BYBIT_API_SECRET in .env")
 
     testnet = os.getenv('TRADING_MODE', 'testnet').lower() != 'live'
-    symbols = ["TONUSDT", "ETHUSDT", "DOGEUSDT", "RNDRUSDT"]
+    symbols = ["ETHUSDT", "DOGEUSDT", "SHIBUSDT", "FLOKIUSDT", "BONKUSDT"]
     logger.info(f"▶ Starting EMA-filtered bots for: {symbols}")
 
     bots = {}
