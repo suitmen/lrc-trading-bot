@@ -283,7 +283,7 @@ if __name__ == "__main__":
         raise ValueError("Set BYBIT_API_KEY and BYBIT_API_SECRET in .env")
 
     testnet = os.getenv('TRADING_MODE', 'testnet').lower() != 'live'
-    symbols = ["ETHUSDT", "DOGEUSDT", "SHIBUSDT", "FLOKIUSDT", "BONKUSDT"]
+    symbols = ["ETHUSDT", "DOGEUSDT"]
     logger.info(f"▶ Starting EMA-filtered bots for: {symbols}")
 
     bots = {}
