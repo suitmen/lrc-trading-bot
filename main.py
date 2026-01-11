@@ -43,6 +43,7 @@ class LRCBybitBot:
         self.risk_per_trade = 0.01
         self.stop_event = threading.Event()
         self.last_signal_time = 0
+        self.pending_pos = None
         self.logger = logging.getLogger(f'lrc-bot.{self.symbol}')
 
         # Настройки по символу
@@ -53,7 +54,7 @@ class LRCBybitBot:
         elif self.symbol in ["TONUSDT", "DOGEUSDT","RNDRUSDT","SHIBUSDT", "FLOKIUSDT", "BONKUSDT"]:
             self.min_qty = 100.0
             self.sl_mult = 1.2
-            self.tp_mult = 0.4
+            self.tp_mult = 0.9
         elif self.symbol == "ETHUSDT":
             self.min_qty = 0.1
             self.sl_mult = 1.2
@@ -139,6 +140,7 @@ class LRCBybitBot:
         positions = self.session.get_positions(category="linear", symbol=self.symbol)
         pos_list = positions['result']['list']
         if pos_list and float(pos_list[0]['size']) > 0:
+            self.pending_pos = None
             return {
                 'side': pos_list[0]['side'],
                 'size': float(pos_list[0]['size']),
@@ -159,6 +161,7 @@ class LRCBybitBot:
                 reduceOnly=False
             )
             logger.info(f"✅ {side} {qty} {self.symbol} → TP:{tp_price} SL:{sl_price}")
+            self.pending_pos = {'side':side,'size':qty,'entryPrice':tp_price}
             return order
         except Exception as e:
             logger.error(f"🛑 Order failed: {e}")
@@ -171,7 +174,7 @@ class LRCBybitBot:
 
         # Проверка открытой позиции — НИКОГДА не входить, если позиция открыта
         real_pos = self.get_position()
-        if real_pos:
+        if real_pos or self.pending_pos:
             return  # ждём TP/SL
 
         df = self.get_klines(limit=self.lrc_period + 30)
