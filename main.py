@@ -34,7 +34,7 @@ def send_telegram(text: str):
 
 
 class LRCBybitBot:
-    def __init__(self, api_key, api_secret, symbol='TONUSDT', testnet=True):
+    def __init__(self, api_key, api_secret, symbol='DOGEUSDT', testnet=True):
         self.session = HTTP(testnet=testnet, api_key=api_key, api_secret=api_secret)
         self.symbol = symbol
         self.lrc_period = 20
@@ -43,26 +43,26 @@ class LRCBybitBot:
         self.risk_per_trade = 0.01
         self.stop_event = threading.Event()
         self.last_signal_time = 0
-        self.pending_pos = None
+        self.last_position_size = 0.0  # для логирования TP/SL
         self.logger = logging.getLogger(f'lrc-bot.{self.symbol}')
 
-        # Настройки по символу
+        # Настройки по символу — улучшенный RR и безопасный min_qty
         if self.symbol == "APTUSDT":
-            self.min_qty = 500.0
-            self.sl_mult = 1.2  # уменьшено для улучшения RR
-            self.tp_mult = 0.4  # сближено
-        elif self.symbol in ["TONUSDT", "DOGEUSDT","RNDRUSDT","SHIBUSDT", "FLOKIUSDT", "BONKUSDT"]:
+            self.min_qty = 50.0    # снижено с 500 → 50
+            self.sl_mult = 1.0
+            self.tp_mult = 1.0
+        elif self.symbol in ["TONUSDT", "DOGEUSDT"]:
             self.min_qty = 100.0
-            self.sl_mult = 1.2
+            self.sl_mult = 1.0
             self.tp_mult = 0.9
         elif self.symbol == "ETHUSDT":
             self.min_qty = 0.1
-            self.sl_mult = 1.2
-            self.tp_mult = 0.4
+            self.sl_mult = 1.0
+            self.tp_mult = 0.9
         else:
             self.min_qty = 1.0
-            self.sl_mult = 1.2
-            self.tp_mult = 0.4
+            self.sl_mult = 1.0
+            self.tp_mult = 0.9
 
     def get_klines(self, interval='5', limit=250):
         klines = self.session.get_kline(category="linear", symbol=self.symbol, interval=interval, limit=limit)
@@ -78,12 +78,9 @@ class LRCBybitBot:
         df = self.get_klines(limit=250)
         if len(df) < 201:
             return 'neutral', df['close'].iloc[-1], None, None
-
         close = df['close'].iloc[-1]
         ema50 = talib.EMA(df['close'], timeperiod=50).iloc[-1]
         ema200 = talib.EMA(df['close'], timeperiod=200).iloc[-1]
-
-        # Буфер 0.1% для устойчивости
         if ema50 > ema200 * 1.001 and close > ema50:
             return 'up', close, ema50, ema200
         elif ema50 < ema200 * 0.999 and close < ema50:
@@ -120,17 +117,17 @@ class LRCBybitBot:
         qty_raw = risk_amount / sl_distance_usd
         ticker = self.session.get_tickers(category="linear", symbol=self.symbol)['result']['list'][0]
         price = float(ticker['lastPrice'])
-        qty = min(qty_raw / price, 700.0)
-        # Ограничение: не нарушать min_qty, но и не превышать разумный риск
+        qty = qty_raw / price
         if qty < self.min_qty:
-            # Если расчётный размер < min_qty — не торгуем
             return 0
+        if qty * price > balance * 0.1:
+            qty = (balance * 0.1) / price
         if self.symbol == "BTCUSDT":
             return round(qty, 3)
-        elif self.symbol in ["TONUSDT", "DOGEUSDT", "RNDRUSDT","SHIBUSDT", "FLOKIUSDT", "BONKUSDT"]:
-            return round(qty, 1)
         elif self.symbol == "APTUSDT":
             return int(qty)
+        elif self.symbol in ["TONUSDT", "DOGEUSDT"]:
+            return round(qty, 1)
         elif self.symbol == "ETHUSDT":
             return round(qty, 2)
         else:
@@ -140,12 +137,7 @@ class LRCBybitBot:
         positions = self.session.get_positions(category="linear", symbol=self.symbol)
         pos_list = positions['result']['list']
         if pos_list and float(pos_list[0]['size']) > 0:
-            self.pending_pos = None
-            return {
-                'side': pos_list[0]['side'],
-                'size': float(pos_list[0]['size']),
-                'entryPrice': float(pos_list[0]['avgPrice'])
-            }
+            return {'side': pos_list[0]['side'], 'size': float(pos_list[0]['size'])}
         return None
 
     def place_order(self, side, qty, tp_price=None, sl_price=None):
@@ -161,7 +153,6 @@ class LRCBybitBot:
                 reduceOnly=False
             )
             logger.info(f"✅ {side} {qty} {self.symbol} → TP:{tp_price} SL:{sl_price}")
-            self.pending_pos = {'side':side,'size':qty,'entryPrice':tp_price}
             return order
         except Exception as e:
             logger.error(f"🛑 Order failed: {e}")
@@ -172,13 +163,22 @@ class LRCBybitBot:
         if now - self.last_signal_time < 15 * 60:
             return
 
-        # Проверка открытой позиции — НИКОГДА не входить, если позиция открыта
-        real_pos = self.get_position()
-        if real_pos or self.pending_pos:
-            return  # ждём TP/SL
-
         df = self.get_klines(limit=self.lrc_period + 30)
         if len(df) < self.lrc_period + 10:
+            return
+
+        # 🔔 Логирование срабатывания TP/SL
+        real_pos = self.get_position()
+        current_size = real_pos['size'] if real_pos else 0.0
+        if self.last_position_size > 0 and current_size == 0 and (now - self.last_signal_time) > 60:
+            logger.info(f"🔔 {self.symbol}: TP/SL сработал! Позиция закрыта.")
+            send_telegram(f"✅ TP/SL сработал по {self.symbol}!")
+            self.last_position_size = 0
+        else:
+            self.last_position_size = current_size
+
+        # 🔒 Никаких сигналов при открытой позиции
+        if real_pos:
             return
 
         close = df['close'].iloc[-1]
@@ -191,32 +191,30 @@ class LRCBybitBot:
         rsi = self.calculate_rsi(df['close'])
         atr = self.calculate_atr()
         atr_pct = atr / close * 100
-
         short_range = (df['high'].iloc[-5:].max() - df['low'].iloc[-5:].min()) / close * 100
         roc_15m = (close / df['close'].iloc[-4] - 1) * 100 if len(df) >= 5 else 0
         effective_vol = max(atr_pct, short_range * 0.7)
         volatility_override = abs(roc_15m) >= 0.8
 
-        # Порог волатильности по символу
+        # 📉 Порог волатильности по символу
         vol_threshold = 0.30
-        if self.symbol in ["TONUSDT", "ETHUSDT", "RNDRUSDT"]:
-            vol_threshold = 0.25  # более чувствительный порог
-        elif self.symbol in ["DOGEUSDT", "APTUSDT","SHIBUSDT", "FLOKIUSDT", "BONKUSDT"]:
+        if self.symbol in ["TONUSDT", "ETHUSDT"]:
+            vol_threshold = 0.25
+        elif self.symbol in ["DOGEUSDT", "APTUSDT"]:
             vol_threshold = 0.28
 
         if not volatility_override and effective_vol < vol_threshold:
-#        if not volatility_override and effective_vol < 0.4:
             logger.info(f"⏸ {self.symbol}: vol={effective_vol:.2f}%, ROC15={roc_15m:+.2f}% → skip")
             return
 
-        # === EMA TREND FILTER ===
+        # 📈 EMA TREND FILTER
         trend, _, ema50, ema200 = self.calculate_ema_filter()
         allow_long = (trend != 'down')
         allow_short = (trend != 'up')
 
         margin = atr * 0.2
 
-        # ✅ LONG: только если тренд не вниз
+        # ✅ LONG
         if allow_long and (low <= lower + margin and
                            close > prev_close and
                            slope > -0.5 * atr and
@@ -224,10 +222,10 @@ class LRCBybitBot:
 
             sl_price = lower - atr * self.sl_mult
             tp_price = linreg + atr * self.tp_mult
-            sl_price = min(sl_price, close - atr * max(1.0, self.sl_mult - 0.3))
-            tp_price = max(tp_price, close + atr * max(0.3, self.tp_mult))
-
+            sl_price = min(sl_price, close - atr * max(0.8, self.sl_mult))
+            tp_price = max(tp_price, close + atr * max(0.5, self.tp_mult))
             sl_dist_usd = close - sl_price
+
             qty = self.get_position_size(sl_dist_usd)
             if qty > 0:
                 send_telegram(
@@ -240,7 +238,7 @@ class LRCBybitBot:
                 self.place_order("Buy", qty, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
                 self.last_signal_time = now
 
-        # ✅ SHORT: только если тренд не вверх
+        # ✅ SHORT
         elif allow_short and (high >= upper - margin and
                               close < prev_close and
                               slope < 0.5 * atr and
@@ -248,10 +246,10 @@ class LRCBybitBot:
 
             sl_price = upper + atr * self.sl_mult
             tp_price = linreg - atr * self.tp_mult
-            sl_price = max(sl_price, close + atr * max(1.0, self.sl_mult - 0.3))
-            tp_price = min(tp_price, close - atr * max(0.3, self.tp_mult))
-
+            sl_price = max(sl_price, close + atr * max(0.8, self.sl_mult))
+            tp_price = min(tp_price, close - atr * max(0.5, self.tp_mult))
             sl_dist_usd = sl_price - close
+
             qty = self.get_position_size(sl_dist_usd)
             if qty > 0:
                 send_telegram(
@@ -265,7 +263,7 @@ class LRCBybitBot:
                 self.last_signal_time = now
 
     def run(self):
-        self.logger.info(f"🚀 Starting LRC Mean-Revert Bot (EMA-filtered) for {self.symbol}")
+        self.logger.info(f"🚀 Starting EMA-filtered LRC Bot for {self.symbol}")
         while not self.stop_event.is_set():
             try:
                 self.check_signals()
@@ -286,7 +284,8 @@ if __name__ == "__main__":
         raise ValueError("Set BYBIT_API_KEY and BYBIT_API_SECRET in .env")
 
     testnet = os.getenv('TRADING_MODE', 'testnet').lower() != 'live'
-    symbols = ["ETHUSDT", "DOGEUSDT"]
+    # ✅ Рекомендуется: начать только с DOGEUSDT
+    symbols = ["DOGEUSDT"]  # можно добавить SHIBUSDT, но не TON/APT пока
     logger.info(f"▶ Starting EMA-filtered bots for: {symbols}")
 
     bots = {}
