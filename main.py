@@ -113,6 +113,9 @@ class LRCBybitBot:
         if sl_distance_usd <= 0:
             return 0
         balance = self.get_usdt_balance()
+
+        logger.info(f"USDT balance{balance}")
+
         risk_amount = balance * self.risk_per_trade
         qty_raw = risk_amount / sl_distance_usd
         ticker = self.session.get_tickers(category="linear", symbol=self.symbol)['result']['list'][0]
@@ -204,7 +207,7 @@ class LRCBybitBot:
             vol_threshold = 0.28
 
         if not volatility_override and effective_vol < vol_threshold:
-            logger.info(f"⏸ {self.symbol}: vol={effective_vol:.2f}%, ROC15={roc_15m:+.2f}% → skip")
+#            logger.info(f"⏸ {self.symbol}: vol={effective_vol:.2f}%, ROC15={roc_15m:+.2f}% → skip")
             return
 
         # 📈 EMA TREND FILTER
@@ -235,7 +238,7 @@ class LRCBybitBot:
                     f"Trend: {trend} | ATR%: {effective_vol:.2f}%\n"
                     f"TP: {tp_price:.5f} | SL: {sl_price:.5f}"
                 )
-                self.place_order("Buy", qty, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
+                self.place_order("Buy", 100.0, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
                 self.last_signal_time = now
 
         # ✅ SHORT
@@ -259,7 +262,7 @@ class LRCBybitBot:
                     f"Trend: {trend} | ATR%: {effective_vol:.2f}%\n"
                     f"TP: {tp_price:.5f} | SL: {sl_price:.5f}"
                 )
-                self.place_order("Sell", qty, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
+                self.place_order("Sell", 100.0, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
                 self.last_signal_time = now
 
     def run(self):
@@ -267,7 +270,7 @@ class LRCBybitBot:
         while not self.stop_event.is_set():
             try:
                 self.check_signals()
-                time.sleep(30)
+                time.sleep(60)
             except Exception as e:
                 self.logger.exception(f"💥 Crash in {self.symbol}: {e}")
                 time.sleep(60)
