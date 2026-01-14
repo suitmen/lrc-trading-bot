@@ -238,7 +238,7 @@ class LRCBybitBot:
                     f"Trend: {trend} | ATR%: {effective_vol:.2f}%\n"
                     f"TP: {tp_price:.5f} | SL: {sl_price:.5f}"
                 )
-                self.place_order("Buy", 700.0, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
+                self.place_order("Buy", 800.0, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
                 self.last_signal_time = now
 
         # ✅ SHORT
@@ -262,7 +262,7 @@ class LRCBybitBot:
                     f"Trend: {trend} | ATR%: {effective_vol:.2f}%\n"
                     f"TP: {tp_price:.5f} | SL: {sl_price:.5f}"
                 )
-                self.place_order("Sell", 700.0, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
+                self.place_order("Sell", 800.0, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
                 self.last_signal_time = now
 
     def run(self):
