@@ -44,8 +44,8 @@ class LRCBybitBot:
         self.stop_event = threading.Event()
         self.last_signal_time = 0
         self.last_position_size = 0.0
-        self.trade_log = []
-        self.last_report_time = 0
+        self.trade_log = []          # ← для сбора статистики
+        self.last_report_time = 0    # ← для ежечасного отчёта
         self.logger = logging.getLogger(f'lrc-bot.{self.symbol}')
 
         # Настройки по символу — оптимизировано под DOGE
@@ -130,7 +130,7 @@ class LRCBybitBot:
             return int(qty)
         elif self.symbol in ["TONUSDT", "DOGEUSDT"]:
 #            return round(qty, 1)
-             return 800.0
+            return 800.0
         elif self.symbol == "ETHUSDT":
             return round(qty, 2)
         else:
@@ -180,7 +180,7 @@ class LRCBybitBot:
                 if closed_pnl['result']['list']:
                     pnl = float(closed_pnl['result']['list'][0]['closedPnl'])
                     is_win = pnl > 0
-                    self.trade_log.append({'pnl': pnl, 'is_win': is_win, 'symbol': self.symbol})
+                    self.trade_log.append({'pnl': pnl, 'is_win': is_win})
                     logger.info(f"📊 Закрыта сделка: PnL={pnl:.4f}, Win={is_win}")
             except Exception as e:
                 logger.error(f"Ошибка получения PnL: {e}")
@@ -213,7 +213,7 @@ class LRCBybitBot:
         # 📉 Порог волатильности
         vol_threshold = 0.28 if self.symbol in ["DOGEUSDT", "TONUSDT"] else 0.30
         if not volatility_override and effective_vol < vol_threshold:
-#            logger.info(f"⏸ {self.symbol}: vol={effective_vol:.2f}%, ROC15={roc_15m:+.2f}% → skip")
+            logger.info(f"⏸ {self.symbol}: vol={effective_vol:.2f}%, ROC15={roc_15m:+.2f}% → skip")
             return
 
         # 📈 EMA TREND FILTER
@@ -269,7 +269,7 @@ class LRCBybitBot:
                 self.place_order("Sell", qty, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
                 self.last_signal_time = now
 
-        # 📊 Ежечасный отчёт
+        # 📊 ЕЖЕЧАСНЫЙ ОТЧЁТ
         if now - self.last_report_time > 3600 and self.trade_log:
             total_trades = len(self.trade_log)
             wins = sum(1 for t in self.trade_log if t['is_win'])
@@ -312,8 +312,7 @@ if __name__ == "__main__":
         raise ValueError("Set BYBIT_API_KEY and BYBIT_API_SECRET in .env")
 
     testnet = os.getenv('TRADING_MODE', 'testnet').lower() != 'live'
-    # ✅ Рекомендуется: начать только с DOGEUSDT
-    symbols = ["DOGEUSDT","ETHUSDT"]
+    symbols = ["DOGEUSDT","ETHUSDT"]  # рекомендуется начать только с DOGE
     logger.info(f"▶ Starting EMA-filtered bots for: {symbols}")
 
     bots = {}
