@@ -130,7 +130,7 @@ class LRCBybitBot:
             return int(qty)
         elif self.symbol in ["TONUSDT", "DOGEUSDT"]:
 #            return round(qty, 1)
-            return 800.0
+            return 900.0
         elif self.symbol == "ETHUSDT":
             return round(qty, 2)
         else:
