@@ -130,7 +130,9 @@ class LRCBybitBot:
             return int(qty)
         elif self.symbol in ["TONUSDT", "DOGEUSDT"]:
 #            return round(qty, 1)
-            return 900.0
+            if qty == 0.0: 
+                return 0
+            else: return 900.0
         elif self.symbol == "ETHUSDT":
             return round(qty, 2)
         else:
@@ -222,6 +224,7 @@ class LRCBybitBot:
         allow_short = (trend != 'up')
 
         margin = atr * 0.2
+        logger.info(f"📈 {self.symbol} Trend: {trend}, allow_long={allow_long}, allow_short={allow_short}")
 
         # ✅ LONG
         if allow_long and (low <= lower + margin and
@@ -312,7 +315,7 @@ if __name__ == "__main__":
         raise ValueError("Set BYBIT_API_KEY and BYBIT_API_SECRET in .env")
 
     testnet = os.getenv('TRADING_MODE', 'testnet').lower() != 'live'
-    symbols = ["DOGEUSDT","ETHUSDT"]  # рекомендуется начать только с DOGE
+    symbols = ["DOGEUSDT","APTUSDT","TONUSDT"]  # рекомендуется начать только с DOGE
     logger.info(f"▶ Starting EMA-filtered bots for: {symbols}")
 
     bots = {}
