@@ -129,10 +129,10 @@ class LRCBybitBot:
         elif self.symbol == "APTUSDT":
             return int(qty)
         elif self.symbol in ["TONUSDT", "DOGEUSDT"]:
-#            return round(qty, 1)
-            if qty == 0.0: 
-                return 0
-            else: return 900.0
+            return round(qty, 1)
+#            if qty == 0.0: 
+#                return 0
+#            else: return 900.0
         elif self.symbol == "ETHUSDT":
             return round(qty, 2)
         else:
@@ -248,6 +248,7 @@ class LRCBybitBot:
                 )
                 self.place_order("Buy", qty, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
                 self.last_signal_time = now
+                self.last_position_size = qty
 
         # ✅ SHORT
         elif allow_short and (high >= upper - margin and
@@ -271,6 +272,7 @@ class LRCBybitBot:
                 )
                 self.place_order("Sell", qty, tp_price=f"{tp_price:.8f}", sl_price=f"{sl_price:.8f}")
                 self.last_signal_time = now
+                self.last_position_size = qty
 
         # 📊 ЕЖЕЧАСНЫЙ ОТЧЁТ
         if now - self.last_report_time > 3600 and self.trade_log:
