@@ -52,11 +52,11 @@ class LRCBybitBot:
         if self.symbol == "APTUSDT":
             self.min_qty = 50.0
             self.sl_mult = 1.0
-            self.tp_mult = 1.0
+            self.tp_mult = 1.1
         elif self.symbol in ["TONUSDT", "DOGEUSDT"]:
             self.min_qty = 100.0
             self.sl_mult = 1.0
-            self.tp_mult = 0.9
+            self.tp_mult = 1.1
         elif self.symbol == "ETHUSDT":
             self.min_qty = 0.1
             self.sl_mult = 1.0
@@ -129,7 +129,7 @@ class LRCBybitBot:
         elif self.symbol == "APTUSDT":
             return int(qty)
         elif self.symbol in ["TONUSDT", "DOGEUSDT"]:
-            return round(qty, 1)
+            return round(qty, 0)
 #            if qty == 0.0: 
 #                return 0
 #            else: return 900.0
@@ -317,7 +317,7 @@ if __name__ == "__main__":
         raise ValueError("Set BYBIT_API_KEY and BYBIT_API_SECRET in .env")
 
     testnet = os.getenv('TRADING_MODE', 'testnet').lower() != 'live'
-    symbols = ["DOGEUSDT","APTUSDT","TONUSDT"]  # рекомендуется начать только с DOGE
+    symbols = ["DOGEUSDT","ETHUSDT"]  # рекомендуется начать только с DOGE
     logger.info(f"▶ Starting EMA-filtered bots for: {symbols}")
 
     bots = {}
